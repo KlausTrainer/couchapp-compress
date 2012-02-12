@@ -1,67 +1,88 @@
 #!/usr/bin/env ruby
 
+JAVASCRIPT_DIR = "javascripts"
 COMPRESSOR = "uglifyjs -nc"
 
 def doit!
-  scripts_partial_path = ARGV[0]
-  destination = ARGV[1]
-  compressed_scripts = ''
+  exit_and_print_usage! if ['-h', '--help'].include?(ARGV.first)
 
-  unless scripts_partial_path
-    abort("usage: #{$0} <scripts_partial_path> [<destination>]\nexample: #{$0} templates/partials/scripts.html production")
-  end
-
-  scripts_partial_content = begin
-    File.read(scripts_partial_path)
-  rescue Exception
-    abort("error: cannot read the file '#{scripts_partial_path}'")
-  end
-
-  script_paths = scripts_partial_content.scan(/<script +src=['"]([^'"]+)['"]>/).flatten
-  translated_script_paths = translate_script_paths(script_paths)
-
-  translated_script_paths.each_with_index do |script_path, i|
-    compressor_output = `#{COMPRESSOR} #{script_path} 2> /dev/null`
-    compressed_scripts << if $?.exitstatus == 0
-      compressor_output << "\n\n"
+  destination = if ['-d', '--destination'].include?(ARGV.first)
+    unless ARGV[1]
+      exit_and_print_usage!
     else
-      abort("error: cannot find the corresponding file for '#{script_paths[i]}'")
+      ARGV[1]
     end
   end
 
-  compressed_scripts_file = "#{Time.now.to_i}.min.js"
-  fd = File.open("_attachments/#{compressed_scripts_file}", "w")
-  fd.write(compressed_scripts)
-  fd.close
-
-  fd = File.open(scripts_partial_path, "w")
-  fd.write("<script src=\"../../#{compressed_scripts_file}\"></script>")
-  fd.close
-
-  if destination
-    `couchapp push #{destination}`
+  filenames = if destination
+    ARGV.slice(2, ARGV.length - 2) if ARGV.length > 2
   else
-    `couchapp push`
+    ARGV.slice(0, ARGV.length)
   end
 
-  # restore
-  fd = File.open(scripts_partial_path, "w")
-  fd.write(scripts_partial_content)
-  fd.close
+  unless filenames
+    `couchapp push #{destination}`
+    exit(0)
+  end
 
-  # and clean up
-  File.delete("_attachments/#{compressed_scripts_file}")
+  htmls = filenames.map do |filename|
+    begin
+      File.read(filename)
+    rescue Exception
+      exit_from_file_read_error!(filename)
+    end
+  end
+
+  begin
+    # remove all script tags with source paths from the html files
+    # and insert the concatenated compressed scripts instead
+    compressed_scripts_files = []
+    htmls.each_with_index do |html, i|
+      script_regex = /<script +src=['"]([^'"]+)['"]>.*<\/script>/
+      script_paths = html.scan(script_regex).flatten
+      html_without_scripts = html.gsub(/#{script_regex}/, '')
+      compressed_scripts = compress_and_concat_scripts(script_paths)
+      compressed_scripts_filename = "#{Time.now.to_i}.min.js"
+      compressed_scripts_pathname = "_attachments/#{JAVASCRIPT_DIR}/#{compressed_scripts_filename}"
+      File.write(compressed_scripts_pathname, compressed_scripts)
+      compressed_scripts_files << compressed_scripts_pathname # cleanup later
+      script_tag = "<script type=\"text/javascript\" src=\"#{JAVASCRIPT_DIR}/#{compressed_scripts_filename}\"></script>"
+      exit_no_body_tag!(filenames[i]) unless html_without_scripts.match('</body>')
+      new_html = html_without_scripts.sub('</body>', "</body>#{script_tag}")
+      File.write(filenames[i], new_html)
+    end
+    `couchapp push #{destination}`
+  ensure
+    # restore
+    htmls.each_with_index {|html, i| File.write(filenames[i], html) }
+    # and cleanup
+    compressed_scripts_files.each {|filename| File.delete(filename) }
+  end
 end
 
-def translate_script_paths(scripts)
-  scripts.map do |script|
-    vendor_regex = /^\.\.\/\.\.\/vendor\/([^\/]+)\/(.+)$/
-    script = if script.match(vendor_regex)
-      script.gsub(vendor_regex, 'vendor/\1/_attachments/\2')
+def compress_and_concat_scripts(script_paths)
+  script_paths.reduce('') do |compressed_scripts, script_path|
+    filename = `find -type f -name #{File.basename(script_path)}`.split("\n").first
+    exit_from_file_read_error!(script_path) unless filename
+    compressor_output = `#{COMPRESSOR} #{filename} 2> /dev/null`
+    compressed_scripts << if $?.exitstatus == 0
+      "#{compressor_output}\n\n"
     else
-      script.gsub(/^\.\.\/\.\.\/(.+)$/, '_attachments/\1')
+      exit_from_file_read_error!(script_paths[i])
     end
   end
+end
+
+def exit_and_print_usage!()
+  abort("#{$0}:\n\tusage: #{$0} [-d <destination>] [<filename(s)>]\n\texample: #{$0} -d production _attachments/index.html templates/post.html")
+end
+
+def exit_from_file_read_error!(filename)
+  abort("error: cannot read the file '#{filename}'")
+end
+
+def exit_no_body_tag!(filename)
+  abort("error: the file '#{filename}' does not contain a </body> tag!")
 end
 
 doit!
