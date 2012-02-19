@@ -5,7 +5,6 @@ COMPRESSOR = "uglifyjs -nc"
 
 def doit!
   exit_and_print_usage! if ['-h', '--help'].include?(ARGV.first)
-
   destination = if ['-d', '--destination'].include?(ARGV.first)
     unless ARGV[1]
       exit_and_print_usage!
@@ -38,7 +37,7 @@ def doit!
     # and insert the concatenated compressed scripts instead
     compressed_scripts_files = []
     htmls.each_with_index do |html, i|
-      script_regex = /<script +src=['"]([^'"]+)['"]>.*<\/script>/
+      script_regex = /<script (?:[^>]* )?src=['"]([^'"]+)['"](?: [^>]*)?>.*<\/script>/
       script_paths = html.scan(script_regex).flatten
       html_without_scripts = html.gsub(/#{script_regex}/, '')
       compressed_scripts = compress_and_concat_scripts(script_paths)
